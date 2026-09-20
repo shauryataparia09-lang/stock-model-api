@@ -241,3 +241,112 @@ def compare_stocks(tickers: List[str], period: str = "5y") -> List[StockPredicti
         reverse=True,
     )
     return results
+
+
+# ---------------------------------------------------------------------------
+# SYMBOL SEARCH (so users can search by company name, not just ticker)
+# ---------------------------------------------------------------------------
+
+# Maps Yahoo Finance's internal exchange codes -> TradingView's exchange prefix,
+# so the frontend can build a correct TradingView symbol (e.g. "NSE:RELIANCE")
+# straight from a search result, without guessing.
+YAHOO_EXCHANGE_TO_TV_PREFIX = {
+    "NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ", "NAS": "NASDAQ",
+    "NYQ": "NYSE", "ASE": "AMEX", "PCX": "AMEX",
+    "NSI": "NSE",       # National Stock Exchange of India
+    "BSE": "BSE",        # Bombay Stock Exchange
+    "LSE": "LSE",        # London Stock Exchange
+    "TOR": "TSX",         # Toronto
+    "GER": "XETR",       # Germany / Xetra
+    "PAR": "EURONEXT",
+    "AMS": "EURONEXT",
+    "HKG": "HKEX",
+    "SHH": "SSE",         # Shanghai
+    "SHZ": "SZSE",        # Shenzhen
+    "ASX": "ASX",         # Australia
+    "SES": "SGX",         # Singapore
+    "TYO": "TSE",         # Tokyo
+}
+
+# Fallback: map the ticker's dot-suffix to a TradingView prefix, used when the
+# exchange code above isn't recognized.
+SUFFIX_TO_TV_PREFIX = {
+    ".NS": "NSE", ".BO": "BSE", ".L": "LSE", ".TO": "TSX", ".DE": "XETR",
+    ".PA": "EURONEXT", ".AS": "EURONEXT", ".HK": "HKEX", ".SS": "SSE",
+    ".SZ": "SZSE", ".AX": "ASX", ".SI": "SGX", ".T": "TSE",
+}
+
+
+def _guess_tv_symbol(yahoo_symbol: str, exchange_code: str) -> str:
+    """Build a TradingView-style 'EXCHANGE:SYMBOL' string from a Yahoo search result."""
+    base_symbol = yahoo_symbol.split(".")[0].upper()
+
+    prefix = YAHOO_EXCHANGE_TO_TV_PREFIX.get((exchange_code or "").upper())
+    if not prefix:
+        for suffix, tv_prefix in SUFFIX_TO_TV_PREFIX.items():
+            if yahoo_symbol.upper().endswith(suffix):
+                prefix = tv_prefix
+                break
+    if not prefix:
+        prefix = "NASDAQ"  # reasonable default for unsuffixed US tickers
+
+    return f"{prefix}:{base_symbol}"
+
+
+def search_symbols(query: str, max_results: int = 8) -> List[Dict]:
+    """
+    Search for stocks/companies by name or partial ticker (e.g. "reliance",
+    "apple", "TCS") using Yahoo Finance's public search endpoint. Works across
+    most global exchanges, including NSE/BSE (India), LSE, etc.
+
+    Returns a list of dicts: symbol (use this for /analyze and /compare),
+    name, exchange (display name), and tv_symbol (use this for TradingView
+    widgets on the frontend).
+    """
+    import requests
+
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    url = "https://query2.finance.yahoo.com/v1/finance/search"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+    params = {
+        "q": query,
+        "quotesCount": max_results,
+        "newsCount": 0,
+        "listsCount": 0,
+        "enableFuzzyQuery": True,
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    results = []
+    for quote in data.get("quotes", []):
+        symbol = quote.get("symbol")
+        if not symbol:
+            continue
+        # Only keep tradeable equity-like instruments (skip options/futures noise)
+        if quote.get("quoteType") not in (None, "EQUITY", "ETF"):
+            continue
+        name = quote.get("shortname") or quote.get("longname") or symbol
+        exchange_code = quote.get("exchange", "")
+        exchange_display = quote.get("exchDisp", exchange_code)
+        results.append({
+            "symbol": symbol,
+            "name": name,
+            "exchange": exchange_display,
+            "tv_symbol": _guess_tv_symbol(symbol, exchange_code),
+        })
+
+    return results[:max_results]

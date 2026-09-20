@@ -26,7 +26,7 @@ from typing import List
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from model import analyze_stock, compare_stocks
+from model import analyze_stock, compare_stocks, search_symbols
 
 app = FastAPI(
     title="Stock Technical Analysis API",
@@ -70,3 +70,18 @@ def compare(
 
     results = compare_stocks(ticker_list)
     return {"results": [asdict(r) for r in results]}
+
+
+@app.get("/search")
+def search(
+    q: str = Query(..., description="Company name or partial ticker, e.g. 'reliance', 'apple', 'TCS'")
+):
+    """
+    Search for a stock by company name (not just ticker symbol). Works across
+    NASDAQ, NYSE, NSE, BSE, and most other global exchanges.
+
+    Returns each match's correct ticker symbol to use with /analyze and
+    /compare, plus a ready-to-use TradingView symbol for chart widgets.
+    """
+    results = search_symbols(q)
+    return {"results": results}
